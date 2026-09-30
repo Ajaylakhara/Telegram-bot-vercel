@@ -1,0 +1,17 @@
+# Vercel
+.vercel
+
+# Environment variables — NEVER push these
+.env
+.env.*
+
+# Firebase service account key — contains private key, must never be public
+*.json
+!package.json
+!package-lock.json
+
+# Dependencies
+node_modules/
+
+# Temp / scratch files
+temp_webhook_export.js

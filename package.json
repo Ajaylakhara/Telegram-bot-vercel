@@ -1,0 +1,21 @@
+{
+  "name": "telegram-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "Api/webhook.js",
+  "scripts": {
+    "build": "echo \"no build step needed\"",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cheerio": "^1.2.0",
+    "exceljs": "^4.4.0",
+    "firebase-admin": "^12.7.0",
+    "form-data": "^4.0.6",
+    "node-fetch": "^2.7.0"
+  }
+}
