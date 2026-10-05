@@ -12,6 +12,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@vercel/functions": "^3.9.9",
     "cheerio": "^1.2.0",
     "exceljs": "^4.4.0",
     "firebase-admin": "^12.7.0",

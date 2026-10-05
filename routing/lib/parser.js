@@ -3,8 +3,9 @@
  * in flexible free-text formats (same-line, multi-line, shared/global price,
  * per-product price, optional Exp / FOB lines).
  *
- * Returns an array of { url, units, price, exp, fob } objects, one per product
- * URL found in the message.
+ * Returns an array of { url, units, price, exp, fob, moq, condition } objects,
+ * one per product URL found in the message.
+ * moq and condition are null when not present in the message.
  */
 function parseMultiProduct(text) {
   const lines = text
@@ -67,6 +68,8 @@ function parseMultiProduct(text) {
     let price = null; // start null; fall back to globalPrice only at the end
     let exp = null;
     let fob = null;
+    let moq = null;
+    let condition = null;
 
     // Same-line format: "url $27 600 Units Available"
     const sameLineUnits = lines[i].match(/([\d,]+)\s*Units/i);
@@ -97,11 +100,21 @@ function parseMultiProduct(text) {
         const m = line.match(/^FOB\s*:?\s*(.+)/i);
         if (m) fob = m[1].trim();
       }
+
+      if (!moq) {
+        const m = line.match(/^(?:MOQ|Min\.?\s*Order|Minimum)\s*:?\s*([\d,]+)/i);
+        if (m) moq = m[1].replace(/,/g, "");
+      }
+
+      if (!condition) {
+        const m = line.match(/^Condition\s*:?\s*(.+)/i);
+        if (m) condition = m[1].trim();
+      }
     }
 
     if (!price) price = globalPrice;
 
-    products.push({ url, units, price, exp, fob });
+    products.push({ url, units, price, exp, fob, moq, condition });
   }
   return products;
 }
