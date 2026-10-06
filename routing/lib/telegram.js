@@ -19,9 +19,9 @@ async function sendMessage(chatId, text, extra = {}) {
   }
 }
 
-/** Send a photo. Pass no `caption` to send the photo with no caption at all. */
-async function sendPhoto(chatId, photo, caption) {
-  const payload = { chat_id: chatId, photo };
+/** Send a photo. Pass no `caption` to send the photo with no caption at all. `extra` can include parse_mode, etc. */
+async function sendPhoto(chatId, photo, caption, extra = {}) {
+  const payload = { chat_id: chatId, photo, ...extra };
   if (caption !== undefined) payload.caption = caption;
   try {
     const res = await fetch(`${TG_API}/sendPhoto`, {

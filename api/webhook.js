@@ -107,31 +107,45 @@ async function mailPreviewFlow(chatId, parsedProducts, fields) {
       createdAt: Date.now(),
     });
 
-    // Build preview text for each product
-    const { formatCaption } = require("../routing/lib/format");
-    const previewLines = successful.map((p, i) => {
+    const sel = new Set(fields);
+
+    // Send each product as a SEPARATE message (with photo if image selected)
+    for (let i = 0; i < successful.length; i++) {
+      const p = successful[i];
       const lines = [];
-      lines.push(`\uD83D\uDCE6 Product ${i + 1}`);
-      if (p.name)  lines.push(`  Name: ${p.name}`);
-      if (p.price) lines.push(`  Price: ${p.price}`);
-      if (p.units) lines.push(`  Units: ${Number(p.units).toLocaleString("en-US")}`);
-      if (p.upc)   lines.push(`  UPC: ${p.upc}`);
-      if (p.exp)   lines.push(`  Exp: ${p.exp}`);
-      lines.push(`  Link: ${p.url}`);
-      return lines.join("\n");
-    });
+      lines.push(`\uD83D\uDCE6 *Product ${i + 1} of ${successful.length}*`);
+      if (sel.has("name")  && p.name)  lines.push(`*Name:* ${p.name}`);
+      if (sel.has("price") && p.price) lines.push(`*Price:* ${p.price}`);
+      if (sel.has("units") && p.units) lines.push(`*Units:* ${Number(p.units).toLocaleString("en-US")}`);
+      if (p.exp)                        lines.push(`*Exp:* ${p.exp}`);
+      if (sel.has("upc")   && p.upc)   lines.push(`*UPC:* ${p.upc}`);
+      if (sel.has("link")  && p.url)   lines.push(`*Link:* ${p.url}`);
+      if (sel.has("image") && p.image) lines.push(`\uD83D\uDDBC\uFE0F Image: included`);
 
-    const failNote = failed.length > 0
-      ? `\n\n\u26A0\uFE0F ${failed.length} product(s) could not be scraped:\n` +
+      const caption = lines.join("\n");
+
+      // Send as photo+caption if image selected and available
+      const hasValidImage = sel.has("image") && p.image && typeof p.image === "string" && p.image.startsWith("https");
+      if (hasValidImage) {
+        const photoRes = await sendPhoto(chatId, p.image, caption, { parse_mode: "Markdown" });
+        if (!photoRes.ok) {
+          // fallback to text if photo fails
+          await sendMessage(chatId, caption, { parse_mode: "Markdown" });
+        }
+      } else {
+        await sendMessage(chatId, caption, { parse_mode: "Markdown" });
+      }
+    }
+
+    // Failed products note
+    if (failed.length > 0) {
+      await sendMessage(chatId,
+        `\u26A0\uFE0F ${failed.length} product(s) could not be scraped:\n` +
         failed.map((f) => `  \u2022 ${f.url}`).join("\n")
-      : "";
+      );
+    }
 
-    const previewText =
-      `\uD83D\uDCCB *Product Preview* (${successful.length} product${successful.length > 1 ? "s" : ""})\n\n` +
-      previewLines.join("\n\n") +
-      failNote +
-      `\n\nReady to create a Mailchimp template with the above data?`;
-
+    // Final confirm message with buttons
     const confirmKeyboard = {
       inline_keyboard: [[
         { text: "\u2705 Create Mailchimp Template", callback_data: "mc_confirm" },
@@ -139,10 +153,11 @@ async function mailPreviewFlow(chatId, parsedProducts, fields) {
       ]],
     };
 
-    await sendMessage(chatId, previewText, {
-      parse_mode: "Markdown",
-      reply_markup: confirmKeyboard,
-    });
+    await sendMessage(
+      chatId,
+      `\u2705 All ${successful.length} product${successful.length > 1 ? "s" : ""} scraped above.\nReady to create the Mailchimp template?`,
+      { reply_markup: confirmKeyboard }
+    );
 
   } catch (err) {
     console.error("[MAIL_PREVIEW] error:", err.message);
