@@ -9,6 +9,7 @@
 *.json
 !package.json
 !package-lock.json
+!vercel.json
 
 # Dependencies
 node_modules/

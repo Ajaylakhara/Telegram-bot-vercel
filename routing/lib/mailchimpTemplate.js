@@ -1,4 +1,4 @@
-﻿/**
+/**
  * HTML injection module for Mailchimp template generation.
  *
  * Exports:
@@ -131,17 +131,51 @@ function formatUnits(units) {
 }
 
 /**
- * Resolve the display price from parser price and/or scraped price.
- * Prefers parser-provided price (e.g. "$15.50").
- * Falls back to "$" + scrapedPrice.toFixed(2) (e.g. 15.5 -> "$15.50").
- * Returns null if neither is available.
+ * Display price = ONLY the price typed in the Telegram message (e.g. "$23").
+ * The scraped Amazon/Walmart retail price is deliberately NOT used here: it is
+ * the retail price, not the deal price, and must never appear as the deal price
+ * in an email. When no price was typed the PRICE row is removed.
  */
-function resolvePrice(price, scrapedPrice) {
-  if (price) return price;
-  if (scrapedPrice != null && !isNaN(Number(scrapedPrice))) {
-    return "$" + Number(scrapedPrice).toFixed(2);
+function resolvePrice(price /* , scrapedPrice (ignored) */) {
+  return price ? String(price) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Subject line + master file
+// ---------------------------------------------------------------------------
+
+/**
+ * Campaign subject, e.g.
+ *   1 product : "\u{1F6A8}HILL'S PRESCRIPTION DIET @ $23/unit | 364 Units"
+ *   N products: "\u{1F6A8}CLOSEOUT DEALS | 3 Products"
+ */
+function buildSubject(products) {
+  const siren = "\u{1F6A8}";
+  if (!products || products.length === 0) return `${siren}CLOSEOUT DEALS`;
+  if (products.length > 1) return `${siren}CLOSEOUT DEALS | ${products.length} Products`;
+
+  const p = products[0];
+  const brand = String(p.brand || p.name || "Closeout Deal").trim().toUpperCase();
+  const priceStr = p.price ? ` @ ${p.price}/unit` : "";
+  const fmt = formatUnits(p.units);
+  const unitsStr = fmt ? ` | ${fmt} Units` : "";
+  return `${siren}${brand}${priceStr}${unitsStr}`.slice(0, 150);
+}
+
+/** Reads the master email HTML that ships with the project. */
+function loadMasterHtml() {
+  const fs = require("fs");
+  const path = require("path");
+  const file = path.join(__dirname, "..", "templates", "master.html");
+  try {
+    const html = fs.readFileSync(file, "utf8");
+    if (!html || html.length < 100) throw new Error("empty");
+    return html;
+  } catch (e) {
+    const err = new Error(`Master email file not readable (${file}): ${e.message}`);
+    err.code = "master_file_missing";
+    throw err;
   }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -251,8 +285,8 @@ function generateMailchimpHTML(masterHtml, products, selectedFields) {
 
   if (!blockMatch) {
     const err = new Error(
-      "Master template is missing <!-- PRODUCT_BLOCK_START --> / <!-- PRODUCT_BLOCK_END --> markers. " +
-      "Add these markers to the master Mailchimp template around the repeatable product section."
+      "Master email is missing <!-- PRODUCT_BLOCK_START --> / <!-- PRODUCT_BLOCK_END --> markers. " +
+      "Check routing/templates/master.html."
     );
     err.code = "marker_missing";
     throw err;
@@ -275,6 +309,8 @@ function generateMailchimpHTML(masterHtml, products, selectedFields) {
 module.exports = {
   generateMailchimpHTML,
   getTemplateName,
+  buildSubject,
+  loadMasterHtml,
   // Exported for testing
   escHtml,
   neutralizeMergeTags,

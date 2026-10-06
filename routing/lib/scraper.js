@@ -3,6 +3,9 @@ const cheerio = require("cheerio");
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// node-fetch error messages contain the full request URL; never log the API key.
+const redactKey = (msg) => String(msg || "").replace(/api_key=[^&\s"')]+/gi, "api_key=***");
+
 // ---------- Browser fingerprint rotation (reduces bot detection) ----------
 const USER_AGENTS = [
   {
@@ -199,7 +202,7 @@ async function scrapeAmazonStructured(asin) {
       return { name: data.name.trim(), brand, image, upc, asin, scrapedPrice };
     }
   } catch (e) {
-    console.log(`[scrape] Structured Amazon API error: ${e.message}`);
+    console.log(`[scrape] Structured Amazon API error: ${redactKey(e.message)}`);
   }
   return null;
 }
@@ -314,7 +317,7 @@ async function scrapeProduct(url, retryCount = 0) {
 
     if (SCRAPER_API_KEY) {
       const scraperUrl =
-        `http://api.scraperapi.com?api_key=${SCRAPER_API_KEY}` +
+        `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}` +
         `&url=${encodeURIComponent(fetchUrl)}`;
       console.log(`[scrape] Using ScraperAPI for: ${fetchUrl}`);
       pageRes = await fetch(scraperUrl, {
@@ -830,7 +833,7 @@ async function scrapeProduct(url, retryCount = 0) {
       console.log(`[scrape] No data extracted after ${retryCount + 1} attempt(s) for: ${resolvedUrl}`);
     }
   } catch (e) {
-    console.error(`Scrape failed for ${url}:`, e.message);
+    console.error(`Scrape failed for ${url}:`, redactKey(e.message));
   }
   return result;
 }

@@ -1,13 +1,29 @@
 const { db } = require("../routing/lib/firebase");
-const { sendMessage, sendPhoto } = require("../routing/lib/telegram");
+const { sendMessage } = require("../routing/lib/telegram");
+const { squareImage, sendSquarePhoto } = require("../routing/lib/image");
 const { parseMultiProduct } = require("../routing/lib/parser");
 const { scrapeProduct, sleep } = require("../routing/lib/scraper");
 const { MODE_FIELDS, formatCaption } = require("../routing/lib/format");
 const { isInventoryMessage, handleInventoryMessage } = require("../routing/lib/inventory");
 const { handleCallbackQuery, MODE_SELECT_KEYBOARD } = require("../routing/lib/callbacks");
 const { waitUntil } = require("@vercel/functions");
-const { getMasterTemplateHtml, createMailchimpTemplate, getMailchimpDc } = require("../routing/lib/mailchimp");
-const { generateMailchimpHTML, getTemplateName } = require("../routing/lib/mailchimpTemplate");
+const { mailchimpErrorMessage } = require("../routing/lib/mailchimpFlow");
+
+/**
+ * Prepares the 500x500 white-background version of every product image in
+ * parallel (before replies are sent), so many products don't add up in time.
+ * Stores the Buffer on product._sq (never saved to Firestore).
+ */
+async function prepareSquareImages(products, fields) {
+  if (!new Set(fields).has("image")) return;
+  await Promise.all(
+    products.map(async (p) => {
+      if (p.image && typeof p.image === "string" && p.image.startsWith("http")) {
+        p._sq = await squareImage(p.image);
+      }
+    })
+  );
+}
 
 /**
  * Sends one formatted reply for a scraped product, respecting the user's
@@ -24,7 +40,7 @@ async function sendProductReply(chatId, mode, product, fields) {
   // Only "Image" selected
   if (onlyImage) {
     if (hasImage) {
-      const pj = await sendPhoto(chatId, product.image);
+      const pj = await sendSquarePhoto(chatId, product.image, undefined, {}, product._sq);
       if (pj.ok) return;
       console.log(`[send] sendPhoto (image-only) failed: ${pj.description}`);
     }
@@ -40,7 +56,7 @@ async function sendProductReply(chatId, mode, product, fields) {
   // Image selected + text fields present — try photo+caption, fall back to text
   let sent = false;
   if (hasImage) {
-    const photoJson = await sendPhoto(chatId, product.image, caption);
+    const photoJson = await sendSquarePhoto(chatId, product.image, caption, {}, product._sq);
     if (photoJson.ok) sent = true;
     else console.log(`[send] sendPhoto failed: ${photoJson.description}`);
   }
@@ -51,28 +67,10 @@ async function sendProductReply(chatId, mode, product, fields) {
 // Mailchimp helpers
 // ---------------------------------------------------------------------------
 
-/** Maps error codes to clean Telegram-safe messages (no internal details exposed). */
-function mailchimpErrorMessage(code) {
-  const map = {
-    config_missing:    "\u274C Mailchimp is not configured. Contact the administrator.",
-    master_id_missing: "\u274C Master template ID is not configured.",
-    master_not_found:  "\u274C Could not load the master Mailchimp template.\nCheck MAILCHIMP_MASTER_TEMPLATE_ID.",
-    master_html_empty: "\u274C Master template HTML is empty.\nEnsure it is a Classic/custom-coded template, not New Builder.",
-    marker_missing:    "\u274C Master template is missing product block markers.\nAdd <!-- PRODUCT_BLOCK_START/END --> to the master template first.",
-    all_scraped_failed:"\u274C Could not scrape any products. No Mailchimp template was created.",
-    auth_failed:       "\u274C Mailchimp authentication failed. Check the API key.",
-    rate_limited:      "\u274C Mailchimp rate limit reached. Please try again in a moment.",
-    server_error:      "\u274C Mailchimp server error. Please try again.",
-    network_error:     "\u274C Could not connect to Mailchimp. Please try again.",
-    bad_request:       "\u274C Could not create Mailchimp template. Please try again.",
-  };
-  return map[code] || "\u274C An unexpected error occurred. Please try again.";
-}
-
 /**
  * STEP 1 of the new mail flow:
  * Scrape products, show a preview to the user, then show a
- * \u201cCreate Mailchimp Template\u201d button. Scraped data is stored in Firestore
+ * \u201cCreate Mailchimp Draft\u201d button. Scraped data is stored in Firestore
  * so the button handler can retrieve it without re-scraping.
  *
  * @param {string|number} chatId
@@ -108,38 +106,36 @@ async function mailPreviewFlow(chatId, parsedProducts, fields) {
     });
 
     const sel = new Set(fields);
+    await prepareSquareImages(successful, fields);
 
-    // Send each product as a SEPARATE message (with photo if image selected)
+    // Send each product as a SEPARATE message (with photo if image selected).
+    // Plain text on purpose: product names/URLs often contain _ or * which
+    // break Telegram's Markdown parser and made messages disappear.
     for (let i = 0; i < successful.length; i++) {
       const p = successful[i];
       const fmtUnits = p.units ? Number(p.units).toLocaleString("en-US") : null;
       const lines = [];
-      lines.push(`\uD83D\uDCE6 *Product ${i + 1} of ${successful.length}*`);
-      // Subject line (mail mode)
+      lines.push(`\uD83D\uDCE6 Product ${i + 1} of ${successful.length}`);
       if (sel.has("subject")) {
         const subjectName = p.brand || p.name || "Product";
-        lines.push(`\uD83D\uDCE7 *Subject:* ${subjectName} @ ${p.price || "N/A"}/unit | ${fmtUnits || "N/A"} Units`);
+        lines.push(`\uD83D\uDCE7 Subject: ${subjectName} @ ${p.price || "N/A"}/unit | ${fmtUnits || "N/A"} Units`);
       }
-      if (sel.has("name")  && p.name)    lines.push(`*Name:* ${p.name}`);
-      if (sel.has("price") && p.price)   lines.push(`*Price:* ${p.price}`);
-      if (sel.has("units") && fmtUnits)  lines.push(`*Units:* ${fmtUnits}`);
-      if (p.exp)                          lines.push(`*Exp:* ${p.exp}`);
-      if (sel.has("upc")   && p.upc)    lines.push(`*UPC:* ${p.upc}`);
-      if (sel.has("link")  && p.url)    lines.push(`*Link:* ${p.url}`);
+      if (sel.has("name")  && p.name)    lines.push(`Name: ${p.name}`);
+      if (sel.has("price") && p.price)   lines.push(`Price: ${p.price}`);
+      if (sel.has("units") && fmtUnits)  lines.push(`Units: ${fmtUnits}`);
+      if (p.exp)                          lines.push(`Exp: ${p.exp}`);
+      if (sel.has("upc")   && p.upc)    lines.push(`UPC: ${p.upc}`);
+      if (sel.has("link")  && p.url)    lines.push(`Link: ${p.url}`);
       if (sel.has("image") && p.image)  lines.push(`\uD83D\uDDBC\uFE0F Image: included`);
 
       const caption = lines.join("\n");
 
-      // Send as photo+caption if image selected and available
       const hasValidImage = sel.has("image") && p.image && typeof p.image === "string" && p.image.startsWith("https");
       if (hasValidImage) {
-        const photoRes = await sendPhoto(chatId, p.image, caption, { parse_mode: "Markdown" });
-        if (!photoRes.ok) {
-          // fallback to text if photo fails
-          await sendMessage(chatId, caption, { parse_mode: "Markdown" });
-        }
+        const photoRes = await sendSquarePhoto(chatId, p.image, caption, {}, p._sq);
+        if (!photoRes.ok) await sendMessage(chatId, caption);
       } else {
-        await sendMessage(chatId, caption, { parse_mode: "Markdown" });
+        await sendMessage(chatId, caption);
       }
     }
 
@@ -154,14 +150,14 @@ async function mailPreviewFlow(chatId, parsedProducts, fields) {
     // Final confirm message with buttons
     const confirmKeyboard = {
       inline_keyboard: [[
-        { text: "\u2705 Create Mailchimp Template", callback_data: "mc_confirm" },
+        { text: "\u2705 Create Mailchimp Draft", callback_data: "mc_confirm" },
         { text: "\u274C Cancel",                   callback_data: "mc_cancel"  },
       ]],
     };
 
     await sendMessage(
       chatId,
-      `\u2705 All ${successful.length} product${successful.length > 1 ? "s" : ""} scraped above.\nReady to create the Mailchimp template?`,
+      `\u2705 All ${successful.length} product${successful.length > 1 ? "s" : ""} scraped above.\nReady to create the Mailchimp draft campaign?`,
       { reply_markup: confirmKeyboard }
     );
 
@@ -171,64 +167,30 @@ async function mailPreviewFlow(chatId, parsedProducts, fields) {
   }
 }
 
-/**
- * STEP 2 of the new mail flow (triggered by the \u201cCreate Mailchimp Template\u201d button):
- * Loads saved scraped data from Firestore and creates the Mailchimp template.
- *
- * @param {string|number} chatId
- * @param {number}        msgId   - The message ID of the preview message (to edit its keyboard)
- */
-async function mailchimpCreateFlow(chatId, msgId) {
-  try {
-    // Load pending data from Firestore
-    const pendingRef = db.collection("mailPending").doc(String(chatId));
-    const pendingDoc = await pendingRef.get();
-
-    if (!pendingDoc.exists) {
-      await sendMessage(chatId, "\u274C No pending product data found. Please send the product link(s) again.");
-      return;
-    }
-
-    const { products: successful, fields } = pendingDoc.data();
-
-    // Clear the pending data
-    await pendingRef.delete();
-
-    await sendMessage(chatId, `\uD83D\uDCE7 Creating Mailchimp template for ${successful.length} product(s)\u2026 please wait.`);
-
-    // Fetch master template HTML
-    const masterHtml = await getMasterTemplateHtml();
-
-    // Generate final HTML and create the template
-    const templateName = getTemplateName(successful);
-    const finalHtml    = generateMailchimpHTML(masterHtml, successful, fields);
-    const { templateId, templateName: createdName } = await createMailchimpTemplate(templateName, finalHtml);
-
-    let dc = "us1";
-    try { dc = getMailchimpDc(); } catch (_) { /* non-critical */ }
-
-    await sendMessage(
-      chatId,
-      `\u2705 *Mailchimp Template Created!*\n\n` +
-      `\uD83D\uDCE7 Template: ${createdName}\n` +
-      `\uD83D\uDCE6 Products: ${successful.length}\n` +
-      `\uD83C\uDD94 Template ID: ${templateId}\n\n` +
-      `\u26A0\uFE0F Email NOT sent. Template created only.\n` +
-      `\uD83D\uDD17 https://${dc}.admin.mailchimp.com/templates/`,
-      { parse_mode: "Markdown" }
-    );
-
-  } catch (err) {
-    console.error("[MAILCHIMP_CREATE] error:", err.message, "| code:", err.code);
-    const msg = mailchimpErrorMessage(err.code);
-    await sendMessage(chatId, msg).catch(() => {});
-  }
+/** Optional allowlist: ALLOWED_CHAT_IDS="123,456". Empty/unset = everyone (old behaviour). */
+function isAllowedChat(chatId) {
+  const raw = (process.env.ALLOWED_CHAT_IDS || "").trim();
+  if (!raw) return true;
+  return raw.split(",").map((x) => x.trim()).includes(String(chatId));
 }
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") return res.status(200).send("OK");
+
+  // Optional: Telegram sends this header when setWebhook was called with secret_token.
+  const secret = (process.env.TELEGRAM_WEBHOOK_SECRET || "").trim();
+  if (secret && req.headers["x-telegram-bot-api-secret-token"] !== secret) {
+    return res.status(401).send("Unauthorized");
+  }
+
   const body = req.body;
   if (!body) return res.status(200).send("OK");
+
+  const incomingChatId = body.callback_query?.message?.chat?.id ?? body.message?.chat?.id;
+  if (incomingChatId && !isAllowedChat(incomingChatId)) {
+    console.log(`[handler] Ignoring update from non-allowed chat ${incomingChatId}`);
+    return res.status(200).send("OK");
+  }
 
   // ----- Deduplication (Telegram retries webhooks that don't respond in ~5s) -----
   const updateId = body.update_id;
@@ -272,9 +234,10 @@ module.exports = async (req, res) => {
 
     // ----- Inventory / wholesale fast-path (auto-detected) -----
     if (isInventoryMessage(message)) {
-      res.status(200).send("OK"); // ack immediately; function keeps running after this on Vercel
-      await handleInventoryMessage(chatId, message);
-      return;
+      // Register the background work BEFORE responding (required on Vercel),
+      // otherwise the function can be frozen right after the response is sent.
+      waitUntil(handleInventoryMessage(chatId, message).catch((e) => console.error("[inventory] error:", e)));
+      return res.status(200).send("OK");
     }
 
     // ----- Standard multi-product scrape flow -----
@@ -300,6 +263,7 @@ module.exports = async (req, res) => {
     );
 
     const fields = savedFields || MODE_FIELDS[mode];
+    await prepareSquareImages(scrapedResults, fields);
     for (const product of scrapedResults) {
       await sendProductReply(chatId, mode, product, fields);
       if (scrapedResults.length > 5) await sleep(200); // gentle throttle for large batches

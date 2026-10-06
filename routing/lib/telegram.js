@@ -36,6 +36,32 @@ async function sendPhoto(chatId, photo, caption, extra = {}) {
   }
 }
 
+/**
+ * Send a photo from raw bytes (multipart upload). Used for the processed
+ * 500x500 white-background product images. `extra` can include parse_mode, etc.
+ */
+async function sendPhotoBuffer(chatId, buffer, caption, extra = {}) {
+  const FormData = require("form-data");
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("photo", buffer, { filename: "product.jpg", contentType: "image/jpeg" });
+  if (caption !== undefined && caption !== "") form.append("caption", caption);
+  for (const [k, v] of Object.entries(extra)) {
+    form.append(k, typeof v === "object" ? JSON.stringify(v) : String(v));
+  }
+  try {
+    const res = await fetch(`${TG_API}/sendPhoto`, {
+      method: "POST",
+      body: form,
+      headers: form.getHeaders(),
+    });
+    return await res.json();
+  } catch (e) {
+    console.log(`[send] sendPhotoBuffer error: ${e.message}`);
+    return { ok: false };
+  }
+}
+
 /** Send a file (e.g. the inventory .xlsx) as a Telegram document. */
 async function sendDocument(chatId, buffer, filename, contentType) {
   const FormData = require("form-data");
@@ -95,6 +121,7 @@ module.exports = {
   TG_API,
   sendMessage,
   sendPhoto,
+  sendPhotoBuffer,
   sendDocument,
   answerCallbackQuery,
   editMessageText,
