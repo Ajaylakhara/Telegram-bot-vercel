@@ -3,8 +3,28 @@ const {
   answerCallbackQuery,
   editMessageText,
   editMessageReplyMarkup,
+  sendMessage,
 } = require("./telegram");
 const { MODE_FIELDS, FIELD_LABELS, buildFieldKeyboard } = require("./format");
+const { getMasterTemplateHtml, createMailchimpTemplate, getMailchimpDc } = require("./mailchimp");
+const { generateMailchimpHTML, getTemplateName } = require("./mailchimpTemplate");
+
+/** Maps error codes to Telegram-safe messages. */
+function mailchimpErrorMessage(code) {
+  const map = {
+    config_missing:    "\u274C Mailchimp is not configured. Contact the administrator.",
+    master_id_missing: "\u274C Master template ID is not configured.",
+    master_not_found:  "\u274C Could not load the master Mailchimp template.\nCheck MAILCHIMP_MASTER_TEMPLATE_ID.",
+    master_html_empty: "\u274C Master template HTML is empty.\nEnsure it is a Classic/custom-coded template, not New Builder.",
+    all_scraped_failed:"\u274C Could not scrape any products. No Mailchimp template was created.",
+    auth_failed:       "\u274C Mailchimp authentication failed. Check the API key.",
+    rate_limited:      "\u274C Mailchimp rate limit reached. Please try again in a moment.",
+    server_error:      "\u274C Mailchimp server error. Please try again.",
+    network_error:     "\u274C Could not connect to Mailchimp. Please try again.",
+    bad_request:       "\u274C Could not create Mailchimp template. Please try again.",
+  };
+  return map[code] || "\u274C An unexpected error occurred. Please try again.";
+}
 
 const MODE_SELECT_KEYBOARD = {
   inline_keyboard: [[
@@ -133,6 +153,60 @@ async function handleCallbackQuery(body) {
       msgId,
       `✅ ${modeLabel} mode set — showing: ${fieldLabels}${imageNote}\n\nNow send your product data.`
     );
+    return;
+  }
+  // ── "✅ Create Mailchimp Template" ──
+  if (data === "mc_confirm") {
+    // Remove buttons from the preview message immediately
+    await editMessageReplyMarkup(chatId, msgId, { inline_keyboard: [] }).catch(() => {});
+
+    try {
+      // Load pending data from Firestore
+      const pendingRef = db.collection("mailPending").doc(String(chatId));
+      const pendingDoc = await pendingRef.get();
+
+      if (!pendingDoc.exists) {
+        await sendMessage(chatId, "\u274C No pending product data found. Please send the product link(s) again.");
+        return;
+      }
+
+      const { products: successful, fields } = pendingDoc.data();
+      await pendingRef.delete();
+
+      await sendMessage(chatId, `\uD83D\uDCE7 Creating Mailchimp template for ${successful.length} product(s)\u2026 please wait.`);
+
+      const masterHtml = await getMasterTemplateHtml();
+      const templateName = getTemplateName(successful);
+      const finalHtml    = generateMailchimpHTML(masterHtml, successful, fields);
+      const { templateId, templateName: createdName } = await createMailchimpTemplate(templateName, finalHtml);
+
+      let dc = "us1";
+      try { dc = getMailchimpDc(); } catch (_) { /* non-critical */ }
+
+      await sendMessage(
+        chatId,
+        `\u2705 *Mailchimp Template Created!*\n\n` +
+        `\uD83D\uDCE7 Template: ${createdName}\n` +
+        `\uD83D\uDCE6 Products: ${successful.length}\n` +
+        `\uD83C\uDD94 Template ID: ${templateId}\n\n` +
+        `\u26A0\uFE0F Email NOT sent. Template created only.\n` +
+        `\uD83D\uDD17 https://${dc}.admin.mailchimp.com/templates/`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (err) {
+      console.error("[MC_CONFIRM] error:", err.message, "| code:", err.code);
+      await sendMessage(chatId, mailchimpErrorMessage(err.code)).catch(() => {});
+    }
+    return;
+  }
+
+  // ── "❌ Cancel" ──
+  if (data === "mc_cancel") {
+    // Remove buttons and update preview message
+    await editMessageReplyMarkup(chatId, msgId, { inline_keyboard: [] }).catch(() => {});
+    // Delete pending data from Firestore
+    await db.collection("mailPending").doc(String(chatId)).delete().catch(() => {});
+    await sendMessage(chatId, "\u274C Mailchimp template creation cancelled.");
     return;
   }
 }

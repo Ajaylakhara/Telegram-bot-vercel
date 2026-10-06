@@ -48,7 +48,7 @@ async function sendProductReply(chatId, mode, product, fields) {
 }
 
 // ---------------------------------------------------------------------------
-// Mailchimp flow (runs inside waitUntil after res.status(200) is sent)
+// Mailchimp helpers
 // ---------------------------------------------------------------------------
 
 /** Maps error codes to clean Telegram-safe messages (no internal details exposed). */
@@ -70,26 +70,20 @@ function mailchimpErrorMessage(code) {
 }
 
 /**
- * Full Mailchimp template creation flow.
- * Called inside waitUntil() -- runs after HTTP 200 has been sent to Telegram.
+ * STEP 1 of the new mail flow:
+ * Scrape products, show a preview to the user, then show a
+ * \u201cCreate Mailchimp Template\u201d button. Scraped data is stored in Firestore
+ * so the button handler can retrieve it without re-scraping.
  *
  * @param {string|number} chatId
  * @param {object[]}      parsedProducts  - Output of parseMultiProduct()
  * @param {string[]}      fields          - Enabled field keys from Firestore
  */
-async function mailchimpFlow(chatId, parsedProducts, fields) {
+async function mailPreviewFlow(chatId, parsedProducts, fields) {
   try {
-    await sendMessage(
-      chatId,
-      `\uD83D\uDD0D Creating Mailchimp template for ${parsedProducts.length} product(s)\u2026 please wait.`
-    );
+    await sendMessage(chatId, `\uD83D\uDD0D Scraping ${parsedProducts.length} product(s)\u2026 please wait.`);
 
-    // Step 1: Fetch master template HTML (Option A -- GET /default-content)
-    const masterHtml = await getMasterTemplateHtml();
-
-    // Step 2: Scrape all products in parallel.
-    // scrapeProduct NEVER throws -- always returns { name, brand, ... }.
-    // Failure is detected by name === "" (empty string).
+    // Scrape all products in parallel
     const results = await Promise.all(
       parsedProducts.map(async (p) => {
         const info = await scrapeProduct(p.url);
@@ -98,47 +92,113 @@ async function mailchimpFlow(chatId, parsedProducts, fields) {
     );
 
     const successful = results.filter((r) => r._ok);
-    const failed    = results.filter((r) => !r._ok);
+    const failed     = results.filter((r) => !r._ok);
 
-    // Step 3: Abort if all scrapes failed
     if (successful.length === 0) {
       await sendMessage(chatId, mailchimpErrorMessage("all_scraped_failed"));
       return;
     }
 
-    // Step 4: Generate the final template HTML
+    // Save scraped data to Firestore so the button handler can use it
+    const pendingRef = db.collection("mailPending").doc(String(chatId));
+    await pendingRef.set({
+      products: successful,
+      fields,
+      createdAt: Date.now(),
+    });
+
+    // Build preview text for each product
+    const { formatCaption } = require("../routing/lib/format");
+    const previewLines = successful.map((p, i) => {
+      const lines = [];
+      lines.push(`\uD83D\uDCE6 Product ${i + 1}`);
+      if (p.name)  lines.push(`  Name: ${p.name}`);
+      if (p.price) lines.push(`  Price: ${p.price}`);
+      if (p.units) lines.push(`  Units: ${Number(p.units).toLocaleString("en-US")}`);
+      if (p.upc)   lines.push(`  UPC: ${p.upc}`);
+      if (p.exp)   lines.push(`  Exp: ${p.exp}`);
+      lines.push(`  Link: ${p.url}`);
+      return lines.join("\n");
+    });
+
+    const failNote = failed.length > 0
+      ? `\n\n\u26A0\uFE0F ${failed.length} product(s) could not be scraped:\n` +
+        failed.map((f) => `  \u2022 ${f.url}`).join("\n")
+      : "";
+
+    const previewText =
+      `\uD83D\uDCCB *Product Preview* (${successful.length} product${successful.length > 1 ? "s" : ""})\n\n` +
+      previewLines.join("\n\n") +
+      failNote +
+      `\n\nReady to create a Mailchimp template with the above data?`;
+
+    const confirmKeyboard = {
+      inline_keyboard: [[
+        { text: "\u2705 Create Mailchimp Template", callback_data: "mc_confirm" },
+        { text: "\u274C Cancel",                   callback_data: "mc_cancel"  },
+      ]],
+    };
+
+    await sendMessage(chatId, previewText, {
+      parse_mode: "Markdown",
+      reply_markup: confirmKeyboard,
+    });
+
+  } catch (err) {
+    console.error("[MAIL_PREVIEW] error:", err.message);
+    await sendMessage(chatId, "\u274C Something went wrong while scraping. Please try again.").catch(() => {});
+  }
+}
+
+/**
+ * STEP 2 of the new mail flow (triggered by the \u201cCreate Mailchimp Template\u201d button):
+ * Loads saved scraped data from Firestore and creates the Mailchimp template.
+ *
+ * @param {string|number} chatId
+ * @param {number}        msgId   - The message ID of the preview message (to edit its keyboard)
+ */
+async function mailchimpCreateFlow(chatId, msgId) {
+  try {
+    // Load pending data from Firestore
+    const pendingRef = db.collection("mailPending").doc(String(chatId));
+    const pendingDoc = await pendingRef.get();
+
+    if (!pendingDoc.exists) {
+      await sendMessage(chatId, "\u274C No pending product data found. Please send the product link(s) again.");
+      return;
+    }
+
+    const { products: successful, fields } = pendingDoc.data();
+
+    // Clear the pending data
+    await pendingRef.delete();
+
+    await sendMessage(chatId, `\uD83D\uDCE7 Creating Mailchimp template for ${successful.length} product(s)\u2026 please wait.`);
+
+    // Fetch master template HTML
+    const masterHtml = await getMasterTemplateHtml();
+
+    // Generate final HTML and create the template
     const templateName = getTemplateName(successful);
     const finalHtml    = generateMailchimpHTML(masterHtml, successful, fields);
-
-    // Step 5: Create the new Mailchimp template
     const { templateId, templateName: createdName } = await createMailchimpTemplate(templateName, finalHtml);
 
-    // Step 6: Build and send the confirmation message
     let dc = "us1";
     try { dc = getMailchimpDc(); } catch (_) { /* non-critical */ }
 
-    const skippedNote = failed.length > 0
-      ? `\n\u26A0\uFE0F ${failed.length} product(s) skipped (scrape returned no data):\n` +
-        failed.map((f) => `   \u2022 ${f.url}`).join("\n")
-      : "";
-
-    const masterId = (process.env.MAILCHIMP_MASTER_TEMPLATE_ID || "N/A").trim();
-
     await sendMessage(
       chatId,
-      `\u2705 Mailchimp Template Created\n\n` +
+      `\u2705 *Mailchimp Template Created!*\n\n` +
       `\uD83D\uDCE7 Template: ${createdName}\n` +
-      `\uD83D\uDCE6 Products: ${successful.length}${failed.length > 0 ? ` of ${results.length} created` : ""}` +
-      skippedNote +
-      `\n\uD83C\uDD94 Template ID: ${templateId}` +
-      `\n\uD83C\uDFA8 Master ID: ${masterId} (unchanged)` +
-      `\n\n\u26A0\uFE0F Email NOT sent. Template created only.` +
-      `\n\u26A0\uFE0F Master template was NOT modified.` +
-      `\n\uD83D\uDD17 https://${dc}.admin.mailchimp.com/templates/`
+      `\uD83D\uDCE6 Products: ${successful.length}\n` +
+      `\uD83C\uDD94 Template ID: ${templateId}\n\n` +
+      `\u26A0\uFE0F Email NOT sent. Template created only.\n` +
+      `\uD83D\uDD17 https://${dc}.admin.mailchimp.com/templates/`,
+      { parse_mode: "Markdown" }
     );
 
   } catch (err) {
-    console.error("[MAILCHIMP] Flow error:", err.message, "| code:", err.code);
+    console.error("[MAILCHIMP_CREATE] error:", err.message, "| code:", err.code);
     const msg = mailchimpErrorMessage(err.code);
     await sendMessage(chatId, msg).catch(() => {});
   }
@@ -205,11 +265,11 @@ module.exports = async (req, res) => {
       return res.status(200).send("OK");
     }
 
-    // ----- Mail mode: hand off to Mailchimp flow -----
+    // ----- Mail mode: scrape → preview → button -----
     if (mode === "mail") {
       const fields = savedFields || MODE_FIELDS[mode];
       // Register background work BEFORE sending the HTTP response (required by Vercel)
-      waitUntil(mailchimpFlow(chatId, products, fields));
+      waitUntil(mailPreviewFlow(chatId, products, fields));
       return res.status(200).send("OK");
     }
 
