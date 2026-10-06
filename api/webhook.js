@@ -112,15 +112,21 @@ async function mailPreviewFlow(chatId, parsedProducts, fields) {
     // Send each product as a SEPARATE message (with photo if image selected)
     for (let i = 0; i < successful.length; i++) {
       const p = successful[i];
+      const fmtUnits = p.units ? Number(p.units).toLocaleString("en-US") : null;
       const lines = [];
       lines.push(`\uD83D\uDCE6 *Product ${i + 1} of ${successful.length}*`);
-      if (sel.has("name")  && p.name)  lines.push(`*Name:* ${p.name}`);
-      if (sel.has("price") && p.price) lines.push(`*Price:* ${p.price}`);
-      if (sel.has("units") && p.units) lines.push(`*Units:* ${Number(p.units).toLocaleString("en-US")}`);
-      if (p.exp)                        lines.push(`*Exp:* ${p.exp}`);
-      if (sel.has("upc")   && p.upc)   lines.push(`*UPC:* ${p.upc}`);
-      if (sel.has("link")  && p.url)   lines.push(`*Link:* ${p.url}`);
-      if (sel.has("image") && p.image) lines.push(`\uD83D\uDDBC\uFE0F Image: included`);
+      // Subject line (mail mode)
+      if (sel.has("subject")) {
+        const subjectName = p.brand || p.name || "Product";
+        lines.push(`\uD83D\uDCE7 *Subject:* ${subjectName} @ ${p.price || "N/A"}/unit | ${fmtUnits || "N/A"} Units`);
+      }
+      if (sel.has("name")  && p.name)    lines.push(`*Name:* ${p.name}`);
+      if (sel.has("price") && p.price)   lines.push(`*Price:* ${p.price}`);
+      if (sel.has("units") && fmtUnits)  lines.push(`*Units:* ${fmtUnits}`);
+      if (p.exp)                          lines.push(`*Exp:* ${p.exp}`);
+      if (sel.has("upc")   && p.upc)    lines.push(`*UPC:* ${p.upc}`);
+      if (sel.has("link")  && p.url)    lines.push(`*Link:* ${p.url}`);
+      if (sel.has("image") && p.image)  lines.push(`\uD83D\uDDBC\uFE0F Image: included`);
 
       const caption = lines.join("\n");
 
