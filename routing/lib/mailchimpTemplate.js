@@ -232,12 +232,13 @@ function injectProductData(blockHtml, product, sel) {
   if (!sel.has("name") || !name) html = removeSection(html, "NAME");
   if (!sel.has("price") || !effectivePrice) html = removeSection(html, "PRICE");
   if (!sel.has("units") || !fmtUnits) html = removeSection(html, "UNITS");
-  if (!sel.has("upc") || !upc) html = removeSection(html, "UPC");
+  // UPC: always show when field is enabled — display "N/A" if no data
+  if (!sel.has("upc")) html = removeSection(html, "UPC");
   if (!sel.has("link") || !url) html = removeSection(html, "LINK");
 
   // Data-presence-controlled (no Firestore toggle -- show when data present)
   if (!brand) html = removeSection(html, "BRAND");
-  if (!exp) html = removeSection(html, "EXP");
+  // EXP: always show — display "N/A" if no data
   if (!fob) html = removeSection(html, "FOB");
   if (!moq) html = removeSection(html, "MOQ");
   if (!condition) html = removeSection(html, "CONDITION");
@@ -251,9 +252,9 @@ function injectProductData(blockHtml, product, sel) {
     .replace(/PLACEHOLDER_BRAND/g, () => safe(brand))
     .replace(/PLACEHOLDER_PRICE/g, () => safe(effectivePrice))
     .replace(/PLACEHOLDER_UNITS/g, () => safe(fmtUnits))
-    .replace(/PLACEHOLDER_UPC/g, () => safe(upc))
+    .replace(/PLACEHOLDER_UPC/g, () => safe(upc || "N/A"))
     .replace(/PLACEHOLDER_ASIN/g, () => safe(asin))
-    .replace(/PLACEHOLDER_EXP/g, () => safe(exp))
+    .replace(/PLACEHOLDER_EXP/g, () => safe(exp || "N/A"))
     .replace(/PLACEHOLDER_FOB/g, () => safe(fob))
     .replace(/PLACEHOLDER_MOQ/g, () => safe(moq))
     .replace(/PLACEHOLDER_CONDITION/g, () => safe(condition))
