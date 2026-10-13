@@ -69,42 +69,77 @@ async function createMailchimpDraftFlow(chatId) {
   try {
     await sendMessage(
       chatId,
-      `📧 Creating Mailchimp draft for ${products.length} product(s)… please wait.`
+      `📧 Creating ${products.length} separate Mailchimp draft(s) — one per product… please wait.`
     );
 
     const masterHtml = loadMasterHtml();
-    const html = generateMailchimpHTML(masterHtml, products, fields);
-    const subject = buildSubject(products);
-    const title = getTemplateName(products);
-
-    const result = await createCampaignDraft({ subject, title, html });
-
-    // Success: only now is the pending data removed.
-    await pendingRef.delete().catch(() => {});
 
     let dc = "us1";
     try { dc = getMailchimpDc(); } catch (_) { /* non-critical */ }
 
-    const testLine = result.testSent
-      ? `🧪 Test email sent to: ${result.testEmails.join(", ")}`
-      : result.testEmails.length > 0
-        ? "⚠️ Test email could not be sent (draft is still created)."
-        : "ℹ️ No test email sent (set MAILCHIMP_TEST_EMAILS to receive one).";
+    const successes = [];
+    const failures  = [];
 
-    const link = result.webId
-      ? `https://${dc}.admin.mailchimp.com/campaigns/edit?id=${result.webId}`
-      : `https://${dc}.admin.mailchimp.com/campaigns/`;
+    // Create ONE draft per product
+    for (let i = 0; i < products.length; i++) {
+      const singleProduct = [products[i]];
+      try {
+        const html    = generateMailchimpHTML(masterHtml, singleProduct, fields);
+        const subject = buildSubject(singleProduct);
+        const title   = getTemplateName(singleProduct);
 
-    await sendMessage(
-      chatId,
-      `✅ Mailchimp draft campaign created!\n\n` +
-        `📧 Subject: ${result.subject}\n` +
-        `📦 Products: ${products.length}\n` +
-        `${testLine}\n\n` +
-        `⚠️ NOT sent to your list. Review it in Mailchimp and press Send yourself.\n` +
-        `🔗 ${link}`
-    );
-    return true;
+        const result = await createCampaignDraft({ subject, title, html });
+        successes.push({ result, product: products[i] });
+      } catch (err) {
+        console.error(`[MAILCHIMP_DRAFT] product ${i + 1} failed:`, err.message, "| code:", err.code);
+        failures.push({ product: products[i], code: err.code });
+      }
+    }
+
+    // Success: only now is the pending data removed (at least 1 succeeded).
+    if (successes.length > 0) {
+      await pendingRef.delete().catch(() => {});
+    } else {
+      // All failed — release lock so user can retry
+      await pendingRef.update({ processing: false }).catch(() => {});
+    }
+
+    // Build summary message
+    const lines = [];
+
+    if (successes.length > 0) {
+      lines.push(`✅ ${successes.length} Mailchimp draft(s) created!\n`);
+      for (let i = 0; i < successes.length; i++) {
+        const { result, product } = successes[i];
+        const label = product.brand || product.name || `Product ${i + 1}`;
+        const link  = result.webId
+          ? `https://${dc}.admin.mailchimp.com/campaigns/edit?id=${result.webId}`
+          : `https://${dc}.admin.mailchimp.com/campaigns/`;
+        const testLine = result.testSent
+          ? `🧪 Test sent to: ${result.testEmails.join(", ")}`
+          : result.testEmails?.length > 0
+            ? "⚠️ Test email could not be sent."
+            : "";
+        lines.push(
+          `📧 Draft ${i + 1}: ${label}\n` +
+          `   Subject: ${result.subject}\n` +
+          (testLine ? `   ${testLine}\n` : "") +
+          `   🔗 ${link}`
+        );
+      }
+      lines.push(`\n⚠️ NOT sent to your list. Review each draft in Mailchimp and press Send yourself.`);
+    }
+
+    if (failures.length > 0) {
+      lines.push(`\n❌ ${failures.length} draft(s) failed:`);
+      failures.forEach((f, i) => {
+        const label = f.product.brand || f.product.name || `Product ${successes.length + i + 1}`;
+        lines.push(`  • ${label} — ${mailchimpErrorMessage(f.code)}`);
+      });
+    }
+
+    await sendMessage(chatId, lines.join("\n"));
+    return successes.length > 0;
   } catch (err) {
     console.error("[MAILCHIMP_DRAFT] error:", err.message, "| code:", err.code);
     // Keep the pending data so the user can press the button again.
