@@ -226,6 +226,30 @@ async function lookupUpcByName(name) {
   return "";
 }
 
+// ---------- ASIN lookup via UPCItemDB (works without ScraperAPI credits) ----------
+async function lookupByAsin(asin) {
+  if (!asin || asin.length < 5) return null;
+  try {
+    const res = await fetch(
+      `https://api.upcitemdb.com/prod/trial/lookup?asin=${encodeURIComponent(asin)}`,
+      { signal: AbortSignal.timeout ? AbortSignal.timeout(4000) : undefined }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.items && data.items.length > 0) {
+        const item = data.items[0];
+        return {
+          name: item.title || "",
+          brand: item.brand || "",
+          upc: item.upc || "",
+          image: item.images && item.images.length > 0 ? item.images[0] : "",
+        };
+      }
+    }
+  } catch (_) { }
+  return null;
+}
+
 // ---------- Main scraper ----------
 /**
  * Scrapes a single product URL (Amazon or Walmart) and returns:
@@ -261,22 +285,37 @@ async function scrapeProduct(url, retryCount = 0) {
     const SCRAPER_API_KEY = (process.env.SCRAPER_API_KEY || "").trim();
 
     // 4. Amazon fast-path: ScraperAPI's structured Amazon Product API
-    if (isAmazon && result.asin && SCRAPER_API_KEY) {
-      const structured = await scrapeAmazonStructured(result.asin);
-      if (structured && structured.name) {
-        result.name = structured.name;
-        result.brand = structured.brand;
-        result.image = structured.image;
-        result.upc = structured.upc;
-        if (structured.scrapedPrice !== null) result.scrapedPrice = structured.scrapedPrice;
+    if (isAmazon && result.asin) {
+      if (SCRAPER_API_KEY) {
+        const structured = await scrapeAmazonStructured(result.asin);
+        if (structured && structured.name) {
+          result.name = structured.name;
+          result.brand = structured.brand;
+          result.image = structured.image;
+          result.upc = structured.upc;
+          if (structured.scrapedPrice !== null) result.scrapedPrice = structured.scrapedPrice;
 
-        if (!result.upc && result.name) {
-          const fallbackUpc = await lookupUpcByName(result.name);
-          if (fallbackUpc) result.upc = fallbackUpc;
+          if (!result.upc && result.name) {
+            const fallbackUpc = await lookupUpcByName(result.name);
+            if (fallbackUpc) result.upc = fallbackUpc;
+          }
+
+          console.log(`[scrape] Amazon structured API success: "${result.name}" (ASIN: ${result.asin})`);
+          return result;
         }
+      }
 
-        console.log(`[scrape] Amazon structured API success: "${result.name}" (ASIN: ${result.asin})`);
-        return result;
+      // Fast-fallback: If structured API was skipped or failed (e.g. ScraperAPI quota), try UPCItemDB ASIN lookup
+      const asinData = await lookupByAsin(result.asin);
+      if (asinData && asinData.name) {
+        result.name = asinData.name;
+        result.brand = asinData.brand || "";
+        result.image = asinData.image || "";
+        result.upc = asinData.upc || "";
+        console.log(`[scrape] ASIN lookup success: "${result.name}" (UPC: ${result.upc || "N/A"})`);
+        if (result.name && result.image && result.upc) {
+          return result;
+        }
       }
     }
 
@@ -313,23 +352,45 @@ async function scrapeProduct(url, retryCount = 0) {
     }
 
     const fetchUrl = normalizedUrl;
-    let pageRes, resolvedUrl, html;
+    let pageRes = null;
+    let resolvedUrl = fetchUrl;
+    let html = "";
 
     if (SCRAPER_API_KEY) {
       const scraperUrl =
         `https://api.scraperapi.com/?api_key=${SCRAPER_API_KEY}` +
         `&url=${encodeURIComponent(fetchUrl)}`;
       console.log(`[scrape] Using ScraperAPI for: ${fetchUrl}`);
-      pageRes = await fetch(scraperUrl, {
-        signal: AbortSignal.timeout ? AbortSignal.timeout(60000) : undefined,
-      });
-      resolvedUrl = fetchUrl;
-      html = await pageRes.text();
-    } else {
-      console.log(`[scrape] Direct fetch (no ScraperAPI key): ${fetchUrl}`);
+      try {
+        pageRes = await fetch(scraperUrl, {
+          signal: AbortSignal.timeout ? AbortSignal.timeout(30000) : undefined,
+        });
+      } catch (e) {
+        console.warn(`[scrape] ScraperAPI error: ${e.message}`);
+      }
+
+      if (pageRes && pageRes.status === 403) {
+        console.warn(`[scrape] ScraperAPI returned 403 (quota exhausted or forbidden), falling back to direct fetch...`);
+        pageRes = null;
+      } else if (pageRes) {
+        resolvedUrl = fetchUrl;
+        html = await pageRes.text();
+      }
+    }
+
+    if (!pageRes || !html) {
+      console.log(`[scrape] Direct fetch: ${fetchUrl}`);
+      const directHeaders = isAmazon
+        ? {
+            "User-Agent":
+              "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
+            Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+          }
+        : headers;
       pageRes = await fetch(fetchUrl, {
-        headers,
-        signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined,
+        headers: directHeaders,
+        signal: AbortSignal.timeout ? AbortSignal.timeout(10000) : undefined,
       });
       resolvedUrl = pageRes.url || fetchUrl;
       if (resolvedUrl !== fetchUrl) console.log(`[scrape] Redirect: ${fetchUrl} → ${resolvedUrl}`);
@@ -355,12 +416,21 @@ async function scrapeProduct(url, retryCount = 0) {
       pageRes.status === 403;
 
     if (isBlocked) {
-      if (SCRAPER_API_KEY && retryCount < MAX_RETRIES) {
+      if (SCRAPER_API_KEY && pageRes.status !== 403 && retryCount < MAX_RETRIES) {
         console.log(`[scrape] Blocked on attempt ${retryCount + 1}/${MAX_RETRIES + 1} (${pageTitle}), retrying via ScraperAPI...`);
         await sleep(1000);
         return scrapeProduct(url, retryCount + 1);
       }
-      // Last-resort fallback for Amazon URL slug if name still empty
+      // Last-resort fallback: ASIN lookup or URL slug
+      if (isAmazon && result.asin && !result.name) {
+        const asinData = await lookupByAsin(result.asin);
+        if (asinData && asinData.name) {
+          result.name = asinData.name;
+          result.brand = asinData.brand || "";
+          result.image = asinData.image || "";
+          result.upc = asinData.upc || "";
+        }
+      }
       if (isAmazon && !result.name) {
         const slugMatch = normalizedUrl.match(/amazon\.com\/([^\/]+)\/dp\//i);
         if (slugMatch && slugMatch[1] && !slugMatch[1].startsWith("dp")) {
