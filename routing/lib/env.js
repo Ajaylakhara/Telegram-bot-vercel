@@ -2,6 +2,21 @@
 // populated by the platform (e.g. local `vercel dev` without Vercel's own env
 // injection). In production on Vercel, env vars are injected directly and this
 // block is a no-op.
+//
+// Required env vars:
+//   BOT_TOKEN                   - Telegram bot token
+//   TELEGRAM_WEBHOOK_SECRET     - (optional) webhook secret for extra security
+//   ALLOWED_CHAT_IDS            - (optional) comma-separated allowed chat IDs
+//   FIREBASE_PROJECT_ID         - Firebase project
+//   FIREBASE_CLIENT_EMAIL       - Firebase service account email
+//   FIREBASE_PRIVATE_KEY        - Firebase service account private key
+//   SCRAPER_API_KEY             - ScraperAPI key for product scraping
+//   MAILCHIMP_API_KEY           - Mailchimp API key
+//   MAILCHIMP_LIST_ID           - Mailchimp audience list ID
+//   MAILCHIMP_MASTER_CAMPAIGN_ID- Mailchimp master campaign to clone
+//   MAILCHIMP_TEST_EMAILS       - (optional) comma-separated test email recipients
+//   SITE_URL                    - Laravel site base URL (e.g. https://thecloseoutcenter.com)
+//   SITE_API_SECRET             - x-api-key header value for the Laravel bot API
 if (!process.env.BOT_TOKEN) {
   try {
     const fs = require("fs");

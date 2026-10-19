@@ -7,6 +7,8 @@ const {
 } = require("./telegram");
 const { MODE_FIELDS, FIELD_LABELS, buildFieldKeyboard } = require("./format");
 const { createMailchimpDraftFlow } = require("./mailchimpFlow");
+const { handleSiteCallback } = require("./website");
+const { waitUntil } = require("@vercel/functions");
 
 const MODE_SELECT_KEYBOARD = {
   inline_keyboard: [[
@@ -146,13 +148,35 @@ async function handleCallbackQuery(body) {
     return;
   }
 
-  // ── "❌ Cancel" ──
+  // ── "❌ Cancel" (Mailchimp) ──
   if (data === "mc_cancel") {
     // Remove buttons and update preview message
     await editMessageReplyMarkup(chatId, msgId, { inline_keyboard: [] }).catch(() => {});
     // Delete pending data from Firestore
     await db.collection("mailPending").doc(String(chatId)).delete().catch(() => {});
     await sendMessage(chatId, "\u274C Mailchimp draft creation cancelled.");
+    return;
+  }
+
+  // ── Website flow: site_cat / site_back / site_page / site_change /
+  //                  site_confirm / site_confirm_blocked / site_retry /
+  //                  site_cancel / site_same_for_all ──
+  if (
+    data === "site_cancel" ||
+    data === "site_change" ||
+    data === "site_confirm" ||
+    data === "site_confirm_blocked" ||
+    data === "site_retry" ||
+    data === "site_same_for_all" ||
+    data.startsWith("site_cat:") ||
+    data.startsWith("site_back:") ||
+    data.startsWith("site_page:")
+  ) {
+    // site_confirm and site_retry can take up to 25 s per product;
+    // use waitUntil so Vercel keeps the function alive after the 200 is sent.
+    waitUntil(handleSiteCallback(chatId, msgId, data).catch((e) =>
+      console.error("[site_callback] error:", e.message)
+    ));
     return;
   }
 }

@@ -300,6 +300,14 @@ Configure the following variables in your `.env` file or Vercel Project Settings
 | `FIREBASE_CLIENT_EMAIL` | Service Account email with Firestore permissions | `firebase-adminsdk-xxxxx@project.iam.gserviceaccount.com` |
 | `FIREBASE_PRIVATE_KEY` | Service Account private RSA key (handle escaped `\n`) | `"-----BEGIN PRIVATE KEY-----\nMIIEv...=="` |
 | `SCRAPER_API_KEY` | API Key from ScraperAPI for proxy rotation & Amazon API | `1a2b3c4d5e6f7g8h9i0j...` |
+| `MAILCHIMP_API_KEY` | Mailchimp API key | `abc123def456-us1` |
+| `MAILCHIMP_LIST_ID` | Mailchimp audience list ID | `a1b2c3d4e5` |
+| `MAILCHIMP_MASTER_CAMPAIGN_ID` | Master campaign to clone for drafts | `abc123` |
+| `MAILCHIMP_TEST_EMAILS` | Comma-separated test email recipients | `me@example.com,qa@example.com` |
+| `TELEGRAM_WEBHOOK_SECRET` | Optional webhook secret for extra security | `random-secret-string` |
+| `ALLOWED_CHAT_IDS` | Optional comma-separated allowlist of Telegram chat IDs | `123456789,987654321` |
+| `SITE_URL` | Laravel site base URL (no trailing slash) | `https://thecloseoutcenter.com` |
+| `SITE_API_SECRET` | `x-api-key` header value for the Laravel bot API | `your-secure-api-key` |
 
 ---
 
@@ -350,14 +358,68 @@ curl -F "url=https://<your-vercel-domain>.vercel.app/api/webhook" https://api.te
 ```text
 ├── api/
 │   └── webhook.js             # Core bot handler: routing, scraping, Excel generation, formatting
+├── routing/
+│   └── lib/
+│       ├── callbacks.js       # Inline keyboard & callback_data router
+│       ├── env.js             # .env loader + variable documentation
+│       ├── firebase.js        # Firestore client singleton
+│       ├── format.js          # Field definitions & caption formatter
+│       ├── image.js           # 500x500 white-bg JPEG helper
+│       ├── inventory.js       # Wholesale deal Excel workflow
+│       ├── mailchimp.js       # Mailchimp API client
+│       ├── mailchimpFlow.js   # Mailchimp draft creation flow (Flow 4)
+│       ├── mailchimpTemplate.js # HTML template builder
+│       ├── parser.js          # Multi-product URL/price/units parser
+│       ├── scraper.js         # Amazon & Walmart scraping engine
+│       ├── telegram.js        # Telegram API helpers
+│       └── website.js         # "Publish to Website" flow (Flow 6) ← NEW
+├── routing/templates/         # Mailchimp HTML email templates
 ├── public/
 │   └── index.html             # Minimal health-check status page
 ├── .env                       # Local environment secrets (ignored by git)
-├── .gitignore                 # Git ignore file (.vercel, etc.)
-├── package.json               # Node.js dependencies and project scripts
-├── vercel.json                # Vercel serverless function configuration (maxDuration: 300s)
-└── README.md                  # Comprehensive project documentation
+├── .gitignore
+├── package.json
+├── vercel.json
+└── README.md
 ```
+
+---
+
+## 🌐 Flow 6: Publish to Website
+
+Available in **Website mode** after the preview cards are sent.
+
+```mermaid
+sequenceDiagram
+    participant U as User (Telegram)
+    participant B as Bot (Vercel)
+    participant FS as Firestore
+    participant L as Laravel API
+
+    U->>B: Paste Amazon/Walmart link(s) + price + units (Website mode)
+    B->>B: Scrape + send preview cards
+    B->>FS: sitePending/{chatId} = { products, categoryId:null }
+    B->>L: GET /api/bot/categories
+    B->>U: Category picker keyboard
+
+    U->>B: Tap category (drills into children if any)
+    B->>FS: Update sitePending.categoryId
+    B->>U: "Ready to publish N products to <Category>" + [Publish][Change][Cancel]
+
+    U->>B: ✅ Publish to Website
+    B->>FS: Transaction: processing=true (double-tap guard)
+    B->>L: POST /api/bot/products (×N, max 3 concurrent)
+    L-->>B: 201 { id, edit_url, upc_exists }
+    B->>FS: Delete sitePending (on full success) or update with failed products
+    B->>U: ✅/❌ per-product result + edit URL
+```
+
+### Missing Data Handling
+- **Required fields missing** (name, price, units): Publish button shows "🚫 Publish (missing fields)" and is blocked.
+- **Failed scrape**: Send `name | price | units` in a reply — the bot will use those values.
+- **No image**: Publishes without image, adds `📷 No image` note.
+- **Session expired** (>30 min): Prompts to re-send links.
+- **No SITE_URL / SITE_API_SECRET**: Website mode continues to show cards normally; Publish replies "Website publishing is not configured".
 
 ---
 

@@ -6,6 +6,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // node-fetch error messages contain the full request URL; never log the API key.
 const redactKey = (msg) => String(msg || "").replace(/api_key=[^&\s"')]+/gi, "api_key=***");
 
+// ---------- Amazon image URL cleaner ----------
+// Amazon CDN URLs often contain size/format modifiers like ._AC_UF350,350_QL50_ or ._SY300_SX300_QL70_FMwebp_
+// Stripping them returns the original full-resolution JPEG that Telegram can display.
+function cleanAmazonImageUrl(url) {
+  if (!url || typeof url !== "string") return "";
+  url = url.trim();
+  if (url.startsWith("//")) url = "https:" + url;
+  if (url.startsWith("http://")) url = "https://" + url.slice(7);
+  if (/(?:media-amazon\.com|ssl-images-amazon\.com)\/images\/I\//i.test(url)) {
+    // Strip everything between the base filename and the extension, e.g.
+    //   71u4jibanXL._AC_UF350,350_QL50_.jpg  →  71u4jibanXL.jpg
+    url = url.replace(/(images\/I\/[A-Za-z0-9+%_-]+)\.[^.]+(\.(?:jpg|jpeg|png|webp))(?:\?.*)?$/i, "$1$2");
+  }
+  return url;
+}
+
 // ---------- Browser fingerprint rotation (reduces bot detection) ----------
 const USER_AGENTS = [
   {
@@ -703,6 +719,7 @@ async function scrapeProduct(url, retryCount = 0) {
 
     // --- HTML fallback for IMAGE ---
     if (!result.image) {
+      // Desktop: #landingImage
       const landingImg = $("#landingImage");
       if (landingImg.length) {
         const dynamicJson = landingImg.attr("data-a-dynamic-image");
@@ -710,11 +727,12 @@ async function scrapeProduct(url, retryCount = 0) {
           try {
             const imgMap = JSON.parse(dynamicJson);
             const best = Object.entries(imgMap).sort((a, b) => b[1][0] - a[1][0])[0];
-            if (best) result.image = best[0];
+            if (best) result.image = cleanAmazonImageUrl(best[0]);
           } catch (_) { }
         }
-        if (!result.image) result.image = landingImg.attr("data-old-hires") || landingImg.attr("src") || "";
+        if (!result.image) result.image = cleanAmazonImageUrl(landingImg.attr("data-old-hires") || landingImg.attr("src") || "");
       }
+      // Desktop: #imgTagWrapperId img
       if (!result.image) {
         const wrapperImg = $("#imgTagWrapperId img, .imgTagWrapper img").first();
         const dynamicJson = wrapperImg.attr("data-a-dynamic-image");
@@ -722,12 +740,19 @@ async function scrapeProduct(url, retryCount = 0) {
           try {
             const imgMap = JSON.parse(dynamicJson);
             const best = Object.entries(imgMap).sort((a, b) => b[1][0] - a[1][0])[0];
-            if (best) result.image = best[0];
+            if (best) result.image = cleanAmazonImageUrl(best[0]);
           } catch (_) { }
         }
-        if (!result.image) result.image = wrapperImg.attr("data-old-hires") || wrapperImg.attr("src") || "";
+        if (!result.image) result.image = cleanAmazonImageUrl(wrapperImg.attr("data-old-hires") || wrapperImg.attr("src") || "");
       }
-      if (!result.image) result.image = $("img[data-testid='hero-image']").first().attr("src") || "";
+      // Mobile: #main-image (Amazon mobile HTML returns this element)
+      if (!result.image) {
+        const mobileImg = $("#main-image");
+        if (mobileImg.length) {
+          result.image = cleanAmazonImageUrl(mobileImg.attr("data-old-hires") || mobileImg.attr("src") || "");
+        }
+      }
+      if (!result.image) result.image = cleanAmazonImageUrl($("img[data-testid='hero-image']").first().attr("src") || "");
       if (!result.image) result.image = $("meta[property='og:image']").attr("content") || "";
       if (!result.image) result.image = $("meta[name='twitter:image']").attr("content") || "";
       if (result.image && !result.image.startsWith("http")) result.image = "";

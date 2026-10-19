@@ -8,6 +8,8 @@ const { isInventoryMessage, handleInventoryMessage } = require("../routing/lib/i
 const { handleCallbackQuery, MODE_SELECT_KEYBOARD } = require("../routing/lib/callbacks");
 const { waitUntil } = require("@vercel/functions");
 const { mailchimpErrorMessage } = require("../routing/lib/mailchimpFlow");
+const { sitePreviewFlow, websitePreviewFlow, siteConfigured } = require("../routing/lib/website");
+
 
 /**
  * Prepares the 500x500 white-background version of every product image in
@@ -257,6 +259,17 @@ module.exports = async (req, res) => {
       return res.status(200).send("OK");
     }
 
+    // ----- Website mode: scrape → preview cards → category picker → publish -----
+    if (mode === "website") {
+      if (!siteConfigured()) {
+        // No env vars set — fall through to standard card display below
+      } else {
+        // Register background work BEFORE the 200 response (Vercel requirement)
+        waitUntil(websitePreviewFlow(chatId, products, savedFields || MODE_FIELDS[mode]));
+        return res.status(200).send("OK");
+      }
+    }
+
     console.log(`[handler] Scraping ${products.length} products in parallel...`);
     const scrapedResults = await Promise.all(
       products.map((p) => scrapeProduct(p.url).then((info) => ({ ...p, ...info })))
@@ -270,6 +283,7 @@ module.exports = async (req, res) => {
     }
 
     return res.status(200).send("OK");
+
   } catch (err) {
     console.error("[handler] Unhandled error:", err);
   }
