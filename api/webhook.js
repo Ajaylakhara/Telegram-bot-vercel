@@ -1,4 +1,4 @@
-const { db } = require("../routing/lib/firebase");
+const { db, isFirebaseReady } = require("../routing/lib/firebase");
 const { sendMessage } = require("../routing/lib/telegram");
 const { squareImage, sendSquarePhoto } = require("../routing/lib/image");
 const { parseMultiProduct } = require("../routing/lib/parser");
@@ -177,7 +177,28 @@ function isAllowedChat(chatId) {
 }
 
 module.exports = async (req, res) => {
-  if (req.method !== "POST") return res.status(200).send("OK");
+  // Health check endpoint — visit /api/webhook in a browser to diagnose issues
+  if (req.method !== "POST") {
+    const health = {
+      status: "ok",
+      timestamp: new Date().toISOString(),
+      env: {
+        BOT_TOKEN: !!(process.env.BOT_TOKEN || "").trim(),
+        FIREBASE_PROJECT_ID: !!(process.env.FIREBASE_PROJECT_ID || "").trim(),
+        FIREBASE_CLIENT_EMAIL: !!(process.env.FIREBASE_CLIENT_EMAIL || "").trim(),
+        FIREBASE_PRIVATE_KEY: (process.env.FIREBASE_PRIVATE_KEY || "").trim().length > 100,
+        SCRAPER_API_KEY: !!(process.env.SCRAPER_API_KEY || "").trim(),
+        MAILCHIMP_API_KEY: !!(process.env.MAILCHIMP_API_KEY || "").trim(),
+        MAILCHIMP_LIST_ID: !!(process.env.MAILCHIMP_LIST_ID || "").trim(),
+        SITE_URL: !!(process.env.SITE_URL || "").trim(),
+        SITE_API_SECRET: !!(process.env.SITE_API_SECRET || "").trim(),
+      },
+      firebase: isFirebaseReady ? "ready" : "NOT READY — check env vars",
+    };
+    const allOk = Object.values(health.env).every(Boolean) && isFirebaseReady;
+    health.status = allOk ? "healthy" : "degraded — missing env vars";
+    return res.status(200).json(health);
+  }
 
   // Optional: Telegram sends this header when setWebhook was called with secret_token.
   const secret = (process.env.TELEGRAM_WEBHOOK_SECRET || "").trim();
@@ -188,7 +209,21 @@ module.exports = async (req, res) => {
   const body = req.body;
   if (!body) return res.status(200).send("OK");
 
+  // ----- Firebase guard -----
+  // If Firebase failed to init (missing env vars), respond with an error message
+  // instead of crashing silently. /start still works without Firestore.
   const incomingChatId = body.callback_query?.message?.chat?.id ?? body.message?.chat?.id;
+  if (!isFirebaseReady) {
+    console.error("[handler] Firebase not initialized — check env vars in Vercel dashboard.");
+    if (incomingChatId) {
+      await sendMessage(incomingChatId,
+        "\u26A0\uFE0F Bot is temporarily unavailable (configuration error). " +
+        "Please contact the admin."
+      ).catch(() => {});
+    }
+    return res.status(200).send("OK");
+  }
+
   if (incomingChatId && !isAllowedChat(incomingChatId)) {
     console.log(`[handler] Ignoring update from non-allowed chat ${incomingChatId}`);
     return res.status(200).send("OK");
@@ -217,7 +252,7 @@ module.exports = async (req, res) => {
     const chatId = body.message?.chat?.id;
     if (!message || !chatId) return res.status(200).send("OK");
 
-    // ----- /start -----
+    // ----- /start — works without Firestore -----
     const trimmedLower = message.trim().toLowerCase();
     if (trimmedLower === "/start" || trimmedLower === "start" || trimmedLower.startsWith("/start@")) {
       await sendMessage(chatId, "Please select a mode:", { reply_markup: MODE_SELECT_KEYBOARD });
@@ -226,6 +261,7 @@ module.exports = async (req, res) => {
 
     // ----- Load saved mode + fields -----
     const modeDoc = await db.collection("userModes").doc(String(chatId)).get();
+
     const mode = modeDoc.exists ? modeDoc.data().mode : null;
     const savedFields = modeDoc.exists ? (modeDoc.data().fields || {})[mode] || MODE_FIELDS[mode] : null;
 

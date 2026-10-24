@@ -1,4 +1,4 @@
-const { db } = require("./firebase");
+const { db, isFirebaseReady } = require("./firebase");
 const {
   answerCallbackQuery,
   editMessageText,
