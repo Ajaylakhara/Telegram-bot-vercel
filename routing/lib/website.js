@@ -25,8 +25,8 @@ const PRODUCT_CONSTANTS = {
   condition:   "New",
   lead_time:   "3-4 Days",
   packaging:   "Retail Packaging",
-  status:      "inactive",
-  auto_delete: "false",
+  status:      "active",
+  auto_delete: "true",
 };
 
 // Max products published concurrently
