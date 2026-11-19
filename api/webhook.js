@@ -209,10 +209,21 @@ module.exports = async (req, res) => {
   const body = req.body;
   if (!body) return res.status(200).send("OK");
 
+  // /start is intentionally handled before Firebase checks. It only needs the
+  // Telegram API, so users can still open the mode menu during a Firestore outage.
+  const incomingMessage = body.message?.text;
+  const incomingChatId = body.callback_query?.message?.chat?.id ?? body.message?.chat?.id;
+  if (incomingMessage && incomingChatId) {
+    const trimmedLower = incomingMessage.trim().toLowerCase();
+    if (trimmedLower === "/start" || trimmedLower === "start" || trimmedLower.startsWith("/start@")) {
+      await sendMessage(incomingChatId, "Please select a mode:", { reply_markup: MODE_SELECT_KEYBOARD });
+      return res.status(200).send("OK");
+    }
+  }
+
   // ----- Firebase guard -----
   // If Firebase failed to init (missing env vars), respond with an error message
   // instead of crashing silently. /start still works without Firestore.
-  const incomingChatId = body.callback_query?.message?.chat?.id ?? body.message?.chat?.id;
   if (!isFirebaseReady) {
     console.error("[handler] Firebase not initialized — check env vars in Vercel dashboard.");
     if (incomingChatId) {
@@ -251,13 +262,6 @@ module.exports = async (req, res) => {
     const message = body.message?.text;
     const chatId = body.message?.chat?.id;
     if (!message || !chatId) return res.status(200).send("OK");
-
-    // ----- /start — works without Firestore -----
-    const trimmedLower = message.trim().toLowerCase();
-    if (trimmedLower === "/start" || trimmedLower === "start" || trimmedLower.startsWith("/start@")) {
-      await sendMessage(chatId, "Please select a mode:", { reply_markup: MODE_SELECT_KEYBOARD });
-      return res.status(200).send("OK");
-    }
 
     // ----- Load saved mode + fields -----
     const modeDoc = await db.collection("userModes").doc(String(chatId)).get();
@@ -306,18 +310,25 @@ module.exports = async (req, res) => {
       }
     }
 
-    console.log(`[handler] Scraping ${products.length} products in parallel...`);
-    const scrapedResults = await Promise.all(
-      products.map((p) => scrapeProduct(p.url).then((info) => ({ ...p, ...info })))
-    );
-
     const fields = savedFields || MODE_FIELDS[mode];
-    await prepareSquareImages(scrapedResults, fields);
-    for (const product of scrapedResults) {
-      await sendProductReply(chatId, mode, product, fields);
-      if (scrapedResults.length > 5) await sleep(200); // gentle throttle for large batches
-    }
-
+    // Scraping and image processing can take longer than Telegram's webhook
+    // deadline. Register the task before returning so Vercel keeps it alive.
+    waitUntil((async () => {
+      try {
+        console.log(`[handler] Scraping ${products.length} products in parallel...`);
+        const scrapedResults = await Promise.all(
+          products.map((p) => scrapeProduct(p.url).then((info) => ({ ...p, ...info })))
+        );
+        await prepareSquareImages(scrapedResults, fields);
+        for (const product of scrapedResults) {
+          await sendProductReply(chatId, mode, product, fields);
+          if (scrapedResults.length > 5) await sleep(200);
+        }
+      } catch (err) {
+        console.error("[handler] Background product flow failed:", err);
+        await sendMessage(chatId, "Sorry, I couldn't process that request. Please try again.").catch(() => {});
+      }
+    })());
     return res.status(200).send("OK");
 
   } catch (err) {
