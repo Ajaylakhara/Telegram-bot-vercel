@@ -65,6 +65,37 @@ async function sendProductReply(chatId, mode, product, fields) {
   if (!sent) await sendMessage(chatId, caption);
 }
 
+async function standardProductFlow(chatId, mode, products, fields) {
+  try {
+    const acknowledgement = await sendMessage(
+      chatId,
+      `🔍 Scraping ${products.length} product(s)… please wait.`
+    );
+    if (!acknowledgement.ok) {
+      console.error("[handler] Could not send product-processing acknowledgement:", acknowledgement.description);
+    }
+
+    const scrapedResults = await Promise.all(
+      products.map((p) => scrapeProduct(p.url).then((info) => ({ ...p, ...info })))
+    );
+
+    await prepareSquareImages(scrapedResults, fields);
+    for (const product of scrapedResults) {
+      await sendProductReply(chatId, mode, product, fields);
+      if (scrapedResults.length > 5) await sleep(200);
+    }
+  } catch (err) {
+    console.error("[handler] Product processing failed:", err);
+    const result = await sendMessage(
+      chatId,
+      "⚠️ Product processing failed. Please try again."
+    );
+    if (!result.ok) {
+      console.error("[handler] Could not send product-processing failure notice:", result.description);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Mailchimp helpers
 // ---------------------------------------------------------------------------
@@ -306,18 +337,8 @@ module.exports = async (req, res) => {
       }
     }
 
-    console.log(`[handler] Scraping ${products.length} products in parallel...`);
-    const scrapedResults = await Promise.all(
-      products.map((p) => scrapeProduct(p.url).then((info) => ({ ...p, ...info })))
-    );
-
     const fields = savedFields || MODE_FIELDS[mode];
-    await prepareSquareImages(scrapedResults, fields);
-    for (const product of scrapedResults) {
-      await sendProductReply(chatId, mode, product, fields);
-      if (scrapedResults.length > 5) await sleep(200); // gentle throttle for large batches
-    }
-
+    waitUntil(standardProductFlow(chatId, mode, products, fields));
     return res.status(200).send("OK");
 
   } catch (err) {

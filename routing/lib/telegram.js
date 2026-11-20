@@ -3,19 +3,27 @@ const fetch = require("node-fetch");
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const TG_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
+const REQUEST_TIMEOUT_MS = 8000;
+
+function telegramFetch(method, options) {
+  return fetch(`${TG_API}/${method}`, {
+    ...options,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+}
 
 /** Send a plain text message. `extra` can include reply_markup, parse_mode, etc. */
 async function sendMessage(chatId, text, extra = {}) {
   try {
-    const res = await fetch(`${TG_API}/sendMessage`, {
+    const res = await telegramFetch("sendMessage", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text, ...extra }),
     });
     return await res.json();
   } catch (e) {
-    console.error("sendMessage error:", e);
-    return { ok: false };
+    console.error("sendMessage error:", e.message);
+    return { ok: false, description: e.message };
   }
 }
 
@@ -24,7 +32,7 @@ async function sendPhoto(chatId, photo, caption, extra = {}) {
   const payload = { chat_id: chatId, photo, ...extra };
   if (caption !== undefined) payload.caption = caption;
   try {
-    const res = await fetch(`${TG_API}/sendPhoto`, {
+    const res = await telegramFetch("sendPhoto", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -32,7 +40,7 @@ async function sendPhoto(chatId, photo, caption, extra = {}) {
     return await res.json();
   } catch (e) {
     console.log(`[send] sendPhoto error: ${e.message}`);
-    return { ok: false };
+    return { ok: false, description: e.message };
   }
 }
 
@@ -50,7 +58,7 @@ async function sendPhotoBuffer(chatId, buffer, caption, extra = {}) {
     form.append(k, typeof v === "object" ? JSON.stringify(v) : String(v));
   }
   try {
-    const res = await fetch(`${TG_API}/sendPhoto`, {
+    const res = await telegramFetch("sendPhoto", {
       method: "POST",
       body: form,
       headers: form.getHeaders(),
@@ -58,7 +66,7 @@ async function sendPhotoBuffer(chatId, buffer, caption, extra = {}) {
     return await res.json();
   } catch (e) {
     console.log(`[send] sendPhotoBuffer error: ${e.message}`);
-    return { ok: false };
+    return { ok: false, description: e.message };
   }
 }
 
@@ -69,7 +77,7 @@ async function sendDocument(chatId, buffer, filename, contentType) {
   form.append("chat_id", String(chatId));
   form.append("document", buffer, { filename, contentType });
   try {
-    const res = await fetch(`${TG_API}/sendDocument`, {
+    const res = await telegramFetch("sendDocument", {
       method: "POST",
       body: form,
       headers: form.getHeaders(),
@@ -77,13 +85,13 @@ async function sendDocument(chatId, buffer, filename, contentType) {
     return await res.json();
   } catch (e) {
     console.error("[telegram] sendDocument error:", e);
-    return { ok: false };
+    return { ok: false, description: e.message };
   }
 }
 
 async function answerCallbackQuery(callbackQueryId) {
   try {
-    await fetch(`${TG_API}/answerCallbackQuery`, {
+    await telegramFetch("answerCallbackQuery", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ callback_query_id: callbackQueryId }),
@@ -95,7 +103,7 @@ async function answerCallbackQuery(callbackQueryId) {
 
 async function editMessageText(chatId, messageId, text, extra = {}) {
   try {
-    await fetch(`${TG_API}/editMessageText`, {
+    await telegramFetch("editMessageText", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, ...extra }),
@@ -107,7 +115,7 @@ async function editMessageText(chatId, messageId, text, extra = {}) {
 
 async function editMessageReplyMarkup(chatId, messageId, replyMarkup) {
   try {
-    await fetch(`${TG_API}/editMessageReplyMarkup`, {
+    await telegramFetch("editMessageReplyMarkup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, message_id: messageId, reply_markup: replyMarkup }),
